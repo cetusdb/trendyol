@@ -9,6 +9,9 @@ from wllmagent3 import SmartShoppingAgent
 from db_manager2 import DBManager
 from telethon.sync import TelegramClient
 import asyncio
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from datetime import datetime
 
 
 class ConfirmationPopup(ctk.CTkToplevel):
@@ -22,14 +25,95 @@ class ConfirmationPopup(ctk.CTkToplevel):
         self.label.pack(pady=30)
         self.btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.btn_frame.pack(pady=10)
-        ctk.CTkButton(self.btn_frame, text="SEPETE EKLE", fg_color="green", command=self.confirm).grid(row=0, column=0,
-                                                                                                       padx=10)
-        ctk.CTkButton(self.btn_frame, text="İPTAL", fg_color="#cc0000", command=self.cancel).grid(row=0, column=1,
-                                                                                                  padx=10)
+        ctk.CTkButton(self.btn_frame, text="SEPETE EKLE", fg_color="green", command=self.confirm).grid(row=0, column=0, padx=10)
+        ctk.CTkButton(self.btn_frame, text="İPTAL", fg_color="#cc0000", command=self.cancel).grid(row=0, column=1, padx=10)
 
     def confirm(self): self.on_confirm(True); self.destroy()
-
     def cancel(self): self.on_confirm(False); self.destroy()
+
+
+class PriceAnalysisWindow(ctk.CTkToplevel):
+    """30 günlük fiyat geçmişi penceresi."""
+    def __init__(self, master, product, db, agent):
+        super().__init__(master)
+        self.title(f"📊 Fiyat Geçmişi: {product['name']}")
+        self.geometry("900x600")
+        self.attributes("-topmost", True)
+        
+        self.product = product
+        self.db = db
+        self.agent = agent
+        
+        self.setup_ui()
+        self.load_analysis()
+
+    def setup_ui(self):
+        # Başlık
+        header = ctk.CTkLabel(self, text=f"🎯 {self.product['name']}", 
+                             font=("Arial", 18, "bold"), text_color="#F27A1A")
+        header.pack(pady=15)
+        
+        # Fiyat geçmişi frame
+        self.chart_frame = ctk.CTkFrame(self, fg_color="#1a1a1a")
+        self.chart_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+    def load_analysis(self):
+        """Fiyat geçmişini yükler."""
+        threading.Thread(target=self.draw_price_chart, daemon=True).start()
+
+    def draw_price_chart(self):
+        """30 günlük fiyat grafiğini çizer."""
+        history = self.db.get_price_history(self.product['url'], days=30)
+        
+        if not history or len(history) < 2:
+            self.after(0, lambda: ctk.CTkLabel(
+                self.chart_frame, 
+                text="⚠️ Henüz yeterli fiyat verisi yok.\nÜrün takibe alındıkça grafik oluşacak.",
+                font=("Arial", 14)
+            ).pack(pady=50))
+            return
+        
+        dates = [datetime.strptime(h['timestamp'], "%Y-%m-%d %H:%M:%S") for h in history]
+        prices = [h['price'] for h in history]
+        
+        fig, ax = plt.subplots(figsize=(8, 4), facecolor='#2b2b2b')
+        ax.set_facecolor('#1a1a1a')
+        
+        ax.plot(dates, prices, color='#F27A1A', linewidth=2, marker='o', markersize=4)
+        ax.axhline(y=min(prices), color='green', linestyle='--', label=f'En Düşük: {min(prices):.2f} TL')
+        ax.axhline(y=max(prices), color='red', linestyle='--', label=f'En Yüksek: {max(prices):.2f} TL')
+        
+        ax.set_xlabel('Tarih', color='white')
+        ax.set_ylabel('Fiyat (TL)', color='white')
+        ax.set_title('30 Günlük Fiyat Trendi', color='white', fontsize=14, fontweight='bold')
+        ax.tick_params(colors='white')
+        ax.legend(facecolor='#2b2b2b', edgecolor='white', labelcolor='white')
+        ax.grid(True, alpha=0.2, color='white')
+        
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        
+        def _update_chart():
+            canvas = FigureCanvasTkAgg(fig, self.chart_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
+            
+            # İstatistikler
+            stats = self.db.get_price_statistics(self.product['url'])
+            if stats:
+                stats_text = f"""
+📊 İSTATİSTİKLER:
+• Minimum: {stats['min']:.2f} TL
+• Maksimum: {stats['max']:.2f} TL
+• Ortalama: {stats['avg']:.2f} TL
+• Güncel: {stats['current']:.2f} TL
+• Trend: {stats['trend'].upper()}
+                """
+                ctk.CTkLabel(self.chart_frame, text=stats_text, 
+                           font=("Arial", 11), justify="left").pack(pady=10)
+        
+        self.after(0, _update_chart)
+
 
 class CodeInputDialog(ctk.CTkToplevel):
     def __init__(self, master, phone):
@@ -47,10 +131,11 @@ class CodeInputDialog(ctk.CTkToplevel):
         self.result = self.entry.get().strip()
         self.destroy()
 
+
 class AgentGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Trendyol Kesintisiz Asistan v23.0 + Telegram")
+        self.title("Trendyol Akıllı Asistan v24.0 + AI Analiz")
         self.geometry("1000x850")
         ctk.set_appearance_mode("dark")
 
@@ -61,18 +146,15 @@ class AgentGUI(ctk.CTk):
         self.agent = None
         self.lock = threading.Lock()
 
-        self.telegram_token = ""
-        self.telegram_chat_id = ""
-
         self.setup_ui()
-        self.load_settings()  # DB'den yükler
+        self.load_settings()
         self.render_list()
 
     def setup_ui(self):
         self.grid_rowconfigure(4, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
-        self.header = ctk.CTkLabel(self, text="TRENDYOL KESİNTİSİZ ASİSTAN", font=("Impact", 28), text_color="#F27A1A")
+        self.header = ctk.CTkLabel(self, text="TRENDYOL AKILLI ASİSTAN", font=("Impact", 28), text_color="#F27A1A")
         self.header.grid(row=0, column=0, pady=(15, 5))
 
         self.browser_btn = ctk.CTkButton(self, text="🌐 TARAYICIYI HAZIRLA VE OTURUMU AÇ",
@@ -80,7 +162,6 @@ class AgentGUI(ctk.CTk):
                                          fg_color="#444444", hover_color="#555555", height=40)
         self.browser_btn.grid(row=1, column=0, padx=20, pady=5, sticky="ew")
 
-        # 18agent_gui.py içindeki setup_ui fonksiyonunun ilgili kısmı
         self.tg_frame = ctk.CTkFrame(self, fg_color="#1e1e1e", corner_radius=12)
         self.tg_frame.grid(row=2, column=0, padx=20, pady=5, sticky="ew")
 
@@ -93,23 +174,8 @@ class AgentGUI(ctk.CTk):
         self.save_tg_btn.grid(row=0, column=2, padx=5)
 
         self.test_tg_btn = ctk.CTkButton(self.tg_frame, text="TEST", width=60, fg_color="purple",
-                                         command=lambda: self.send_telegram("🔔 Bağlantı Testi Başarılı!"))
+                                         command=lambda: self.send_telegram("📱 Bağlantı Testi Başarılı!"))
         self.test_tg_btn.grid(row=0, column=3, padx=5)
-
-        # Ayarları Kaydetme ve Yükleme Metotları
-
-    def save_settings(self):
-        self.telegram_phone = self.phone_entry.get().strip()
-        self.db.set_setting("tg_phone", self.telegram_phone)
-        self.log("✅ Telefon numarası kaydedildi.")
-
-    def load_settings(self):
-        self.telegram_phone = self.db.get_setting("tg_phone", "")
-        self.phone_entry.insert(0, self.telegram_phone)
-
-        #self.test_tg_btn = ctk.CTkButton(self.tg_frame, text="TEST", width=60, fg_color="purple",
-                                        # command=lambda: self.send_telegram("🔔 Bağlantı Testi Başarılı!"))
-        #self.test_tg_btn.grid(row=0, column=5, padx=5)
 
         self.input_frame = ctk.CTkFrame(self, fg_color="#242424", corner_radius=12)
         self.input_frame.grid(row=3, column=0, padx=20, pady=10, sticky="ew")
@@ -160,29 +226,80 @@ class AgentGUI(ctk.CTk):
                                       height=50)
         self.stop_btn.grid(row=0, column=1, padx=20, sticky="ew")
 
+    def save_settings(self):
+        self.telegram_phone = self.phone_entry.get().strip()
+        self.db.set_setting("tg_phone", self.telegram_phone)
+        self.log("✅ Telefon numarası kaydedildi.")
+
+    def load_settings(self):
+        self.telegram_phone = self.db.get_setting("tg_phone", "")
+        self.phone_entry.insert(0, self.telegram_phone)
+
     def launch_browser(self):
-        potential_paths = [
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            os.path.expanduser("~") + r"\AppData\Local\Google\Chrome\Application\chrome.exe"
-        ]
-        chrome_path = next((p for p in potential_paths if os.path.exists(p)), None)
-
-        if not chrome_path:
-            self.log("❌ Chrome.exe bulunamadı!")
-            return
-
+        import platform
+        system = platform.system()
+        
         user_data = os.path.join(os.getcwd(), "asistan_profil")
-        self.log("🚀 Tarayıcı hazırlanıyor...")
-        cmd = f'"{chrome_path}" --remote-debugging-port=9222 --user-data-dir="{user_data}"'
-        subprocess.Popen(cmd, shell=True)
+        
+        if system == "Darwin":  # macOS
+            chrome_paths = [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                os.path.expanduser("~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+            ]
+            chrome_path = next((p for p in chrome_paths if os.path.exists(p)), None)
+            
+            if not chrome_path:
+                self.log("❌ Chrome bulunamadı! (macOS)")
+                self.log("💡 Chrome'u /Applications klasöründen yükleyin")
+                return
+            
+            self.log("🚀 Tarayıcı hazırlanıyor (macOS)...")
+            cmd = [chrome_path, f"--remote-debugging-port=9222", f"--user-data-dir={user_data}"]
+            subprocess.Popen(cmd)
+            
+        elif system == "Windows":  # Windows
+            chrome_paths = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                os.path.expanduser("~") + r"\AppData\Local\Google\Chrome\Application\chrome.exe"
+            ]
+            chrome_path = next((p for p in chrome_paths if os.path.exists(p)), None)
+            
+            if not chrome_path:
+                self.log("❌ Chrome.exe bulunamadı! (Windows)")
+                return
+            
+            self.log("🚀 Tarayıcı hazırlanıyor (Windows)...")
+            cmd = f'"{chrome_path}" --remote-debugging-port=9222 --user-data-dir="{user_data}"'
+            subprocess.Popen(cmd, shell=True)
+            
+        elif system == "Linux":  # Linux
+            chrome_paths = [
+                "/usr/bin/google-chrome",
+                "/usr/bin/chromium-browser",
+                "/usr/bin/chromium"
+            ]
+            chrome_path = next((p for p in chrome_paths if os.path.exists(p)), None)
+            
+            if not chrome_path:
+                self.log("❌ Chrome/Chromium bulunamadı! (Linux)")
+                return
+            
+            self.log("🚀 Tarayıcı hazırlanıyor (Linux)...")
+            cmd = [chrome_path, f"--remote-debugging-port=9222", f"--user-data-dir={user_data}"]
+            subprocess.Popen(cmd)
+        
+        else:
+            self.log(f"❌ Desteklenmeyen işletim sistemi: {system}")
+            return
+        
         self.log("✅ Tarayıcı açıldı. Oturumunuzu açın.")
+        self.log(f"🖥️  İşletim Sistemi: {system}")
 
     def send_telegram(self, message):
-        # Önceki kodlarınızda paylaştığınız sabit değerler
         api_id = 36215153
         api_hash = '5d78b538fcf894705c57acf35ebdfd13'
-        phone = self.db.get_setting("tg_phone", "")  # db_manager'dan çekiyoruz
+        phone = self.db.get_setting("tg_phone", "")
 
         if not phone:
             self.log("⚠️ Önce telefon numaranızı kaydedin!")
@@ -198,7 +315,6 @@ class AgentGUI(ctk.CTk):
 
                 if not client.is_user_authorized():
                     client.send_code_request(phone)
-                    # Ana pencerede kod giriş ekranını açar
                     diag = CodeInputDialog(self, phone)
                     self.wait_window(diag)
                     if diag.result:
@@ -216,7 +332,6 @@ class AgentGUI(ctk.CTk):
                 loop.close()
 
         threading.Thread(target=_run, daemon=True).start()
-
 
     def toggle_price_entry(self, choice):
         if choice == "Fiyat":
@@ -269,10 +384,26 @@ class AgentGUI(ctk.CTk):
                     if p.get('autopilot'):
                         ctk.CTkLabel(card, text="🚀 OTO-PİLOT", text_color="#F27A1A", font=("Arial", 10, "bold")).pack(
                             side="left", padx=5)
+                    
+                    # YENİ: AI Analiz butonu
+                    ctk.CTkButton(card, text="🤖 ANALİZ", width=70, fg_color="#9C27B0",
+                                 command=lambda prod=p: self.show_analysis(prod)).pack(side="right", padx=5)
+                    
                     ctk.CTkButton(card, text="SİL", width=50, fg_color="#444444",
-                                  command=lambda u=p['url']: self.manual_remove(u)).pack(side="right", padx=10)
+                                  command=lambda u=p['url']: self.manual_remove(u)).pack(side="right", padx=5)
 
         self.after(0, _update)
+
+    def show_analysis(self, product):
+        """AI analiz penceresini açar."""
+        if not self.agent:
+            try:
+                self.agent = SmartShoppingAgent()
+            except:
+                self.log("❌ Agent başlatılamadı!")
+                return
+        
+        PriceAnalysisWindow(self, product, self.db, self.agent)
 
     def manual_remove(self, url):
         self.db.delete_product(url)
@@ -305,7 +436,7 @@ class AgentGUI(ctk.CTk):
                 if not self.is_monitoring: break
                 if not any(p['url'] == product['url'] for p in self.products): continue
 
-                self.log(f"🔍 Kontrol: {product['name']}")
+                self.log(f"🔎 Kontrol: {product['name']}")
                 try:
                     self.agent.driver.get(product['url'])
                     time.sleep(4)
@@ -316,15 +447,14 @@ class AgentGUI(ctk.CTk):
 
                 c_price = 0
                 selectors = [
-                    "span.ty-plus-price-discounted-price",      # Trendyol Plus indirimi
-                    ".product-price-container .selling-price", # Standart satış fiyatı
-                    ".prc-slg",                             # Kampanyalı fiyat 1
-                    ".prc-dsc",                             # Kampanyalı fiyat 2
-                    "span.discounted",                      # İndirimli etiket
-                    ".product-price-container",             # Genel fiyat kapsayıcısı
-                    "div[class*='price']"                   # Class ismi 'price' geçen herhangi bir div
+                    "span.ty-plus-price-discounted-price",
+                    ".product-price-container .selling-price",
+                    ".prc-slg",
+                    ".prc-dsc",
+                    "span.discounted",
+                    ".product-price-container",
+                    "div[class*='price']"
                 ]
-
 
                 for sel in selectors:
                     try:
